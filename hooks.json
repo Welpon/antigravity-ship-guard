@@ -1,0 +1,16 @@
+{
+  "ship-guard-secret-check": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/secret-hook.mjs",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

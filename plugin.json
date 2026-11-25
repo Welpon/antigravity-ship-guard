@@ -1,0 +1,12 @@
+{
+  "name": "ship-guard",
+  "displayName": "Ship Guard",
+  "version": "1.0.0",
+  "description": "Git Flow & auto-backup safe rollback, Secret Guard (PreToolUse hook + project scanner), and Quality Gate (auto-detected test/build/lint + Fix with AI) for Antigravity. Supports English and Turkish.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Open the Ship Guard panel in the side pane",
+    "Scan this project for leaked secrets or personal file paths",
+    "Run the project's build and tests with Quality Gate"
+  ]
+}
