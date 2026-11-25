@@ -10,6 +10,7 @@ const I18N = {
     tabGit: 'Git Flow',
     tabSecrets: 'Secrets',
     tabQuality: 'Quality',
+    tabRelease: 'Release',
     refresh: 'Refresh',
     repoPlaceholder: 'Project directory path...',
     loadRepo: 'Load',
@@ -60,12 +61,29 @@ const I18N = {
     chatUnavailable: 'Host does not support sending messages to chat.',
     commitRequired: 'Enter a commit message first.',
     loading: 'Loading...',
+    releaseVersion: 'Current Version',
+    latestTag: 'Latest Tag',
+    noTags: 'No Git tags yet.',
+    bumpVersion: 'Bump Version',
+    tagNameLabel: 'Tag Name',
+    releaseTitleLabel: 'Release Title',
+    releaseNotesLabel: 'Release Notes (Changelog)',
+    draftRelease: 'Publish as Draft',
+    createTagBtn: 'Create Tag',
+    createPushTagBtn: 'Tag & Push',
+    publishReleaseBtn: 'GitHub Release',
+    aiReleaseNotesBtn: 'AI Release Notes',
+    existingTags: 'Existing Git Tags',
+    ghReady: 'gh CLI Ready',
+    ghMissing: 'gh CLI Not Found',
+    tagRequired: 'Enter a tag name first (e.g. v1.0.0).',
   },
   tr: {
     appName: 'Ship Guard',
     tabGit: 'Git Akışı',
     tabSecrets: 'Gizli Bilgi',
     tabQuality: 'Kalite',
+    tabRelease: 'Yayın',
     refresh: 'Yenile',
     repoPlaceholder: 'Proje klasör yolu...',
     loadRepo: 'Yükle',
@@ -116,6 +134,22 @@ const I18N = {
     chatUnavailable: 'Bu ortam sohbete doğrudan mesaj göndermeyi desteklemiyor.',
     commitRequired: 'Önce bir commit mesajı girin.',
     loading: 'Yükleniyor...',
+    releaseVersion: 'Mevcut Sürüm',
+    latestTag: 'Son Etiket (Tag)',
+    noTags: 'Henüz Git etiketi (tag) yok.',
+    bumpVersion: 'Sürüm Yükselt',
+    tagNameLabel: 'Etiket Adı (Tag)',
+    releaseTitleLabel: 'Yayın Başlığı',
+    releaseNotesLabel: 'Sürüm Notları (Changelog)',
+    draftRelease: 'Taslak (Draft) olarak yayınla',
+    createTagBtn: 'Tag Oluştur',
+    createPushTagBtn: 'Tag + Push',
+    publishReleaseBtn: 'GitHub Release Yayınla',
+    aiReleaseNotesBtn: 'AI ile Sürüm Notu Yaz',
+    existingTags: 'Mevcut Git Etiketleri',
+    ghReady: 'gh CLI Hazır',
+    ghMissing: 'gh CLI Bulunamadı',
+    tagRequired: 'Önce bir etiket adı girin (örn. v1.0.0).',
   },
 };
 
@@ -140,6 +174,11 @@ const state = {
   checks: [],
   customChecks: [],
   checkResults: {},
+  release: null,
+  releaseTag: 'v1.0.0',
+  releaseTitle: 'v1.0.0',
+  releaseNotes: '',
+  releaseDraft: false,
   commitMsg: '',
   customCmdInput: '',
   pendingRollback: null,
@@ -185,7 +224,7 @@ app.onhostcontextchanged = (ctx) => {
 
 app.ontoolinput = (params) => {
   const args = params?.arguments || {};
-  if (args.tab && ['git', 'secrets', 'quality'].includes(args.tab)) {
+  if (args.tab && ['git', 'secrets', 'quality', 'release'].includes(args.tab)) {
     state.activeTab = args.tab;
   }
   if (args.repo_dir) {
@@ -195,10 +234,20 @@ app.ontoolinput = (params) => {
   render();
 };
 
+function applyReleasePayload(rel) {
+  if (!rel) return;
+  state.release = rel;
+  if (rel.suggestedTag) {
+    state.releaseTag = rel.suggestedTag;
+    state.releaseTitle = rel.suggestedTag;
+  }
+  state.releaseNotes = rel.draftNotes || '';
+}
+
 app.ontoolresult = (result) => {
   const sc = result?.structuredContent;
   if (!sc) return;
-  if (sc.activeTab && ['git', 'secrets', 'quality'].includes(sc.activeTab)) {
+  if (sc.activeTab && ['git', 'secrets', 'quality', 'release'].includes(sc.activeTab)) {
     state.activeTab = sc.activeTab;
   }
   if (sc.prefs) {
@@ -211,6 +260,7 @@ app.ontoolresult = (result) => {
   }
   if (sc.git) state.git = sc.git;
   if (Array.isArray(sc.checks)) state.checks = sc.checks;
+  if (sc.release) applyReleasePayload(sc.release);
   render();
 };
 
@@ -241,6 +291,7 @@ async function refreshAll(explicitDir) {
       state.repoInput = state.repoDir;
       state.git = sc.git || null;
       state.checks = Array.isArray(sc.checks) ? sc.checks : [];
+      if (sc.release) applyReleasePayload(sc.release);
     }
   } catch (err) {
     showToast(err.message, true);
@@ -482,6 +533,88 @@ async function handleFixCheckWithAi(command) {
     state.lang === 'tr'
       ? `Ship Guard Quality Gate şu komutta hata aldı (${state.repoDir}):\nKomut: \`${command}\`\nÇıkış kodu: ${res.exitCode}\n\nÇıktı:\n\`\`\`\n${(res.output || '').slice(0, 3000)}\n\`\`\`\nLütfen hatanın kök nedenini bulup düzelt ve komutu tekrar doğrula.`
       : `Ship Guard Quality Gate failed in ${state.repoDir}:\nCommand: \`${command}\`\nExit code: ${res.exitCode}\n\nOutput:\n\`\`\`\n${(res.output || '').slice(0, 3000)}\n\`\`\`\nPlease diagnose and fix the root cause, then re-verify the command.`;
+  await sendPromptToChat(prompt);
+}
+
+async function handleBumpVersion(level) {
+  state.busy = true;
+  render();
+  try {
+    const res = await callTool('release_bump_version', { repo_dir: state.repoDir, level });
+    if (res?.structuredContent?.release) applyReleasePayload(res.structuredContent.release);
+    showToast(res?.content?.[0]?.text || 'Version bumped.');
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    state.busy = false;
+    render();
+  }
+}
+
+async function handleCreateTag(push) {
+  const tag = state.releaseTag.trim();
+  if (!tag) {
+    showToast(t('tagRequired'), true);
+    return;
+  }
+  state.busy = true;
+  render();
+  try {
+    const res = await callTool('release_create_tag', {
+      repo_dir: state.repoDir,
+      tag,
+      message: state.releaseTitle.trim() || `Release ${tag}`,
+      push,
+    });
+    if (res?.structuredContent?.release) applyReleasePayload(res.structuredContent.release);
+    showToast(res?.content?.[0]?.text || 'Tag created.');
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    state.busy = false;
+    render();
+  }
+}
+
+async function handlePublishGithubRelease() {
+  const tag = state.releaseTag.trim();
+  if (!tag) {
+    showToast(t('tagRequired'), true);
+    return;
+  }
+  state.busy = true;
+  render();
+  try {
+    const res = await callTool('release_publish_github', {
+      repo_dir: state.repoDir,
+      tag,
+      title: state.releaseTitle.trim() || tag,
+      notes: state.releaseNotes.trim() || `Release ${tag}`,
+      draft: state.releaseDraft,
+    });
+    if (res?.structuredContent?.release) applyReleasePayload(res.structuredContent.release);
+    showToast(res?.content?.[0]?.text || 'GitHub Release published.');
+  } catch (err) {
+    if (err.structuredContent?.scan) {
+      state.scan = err.structuredContent.scan;
+      state.activeTab = 'secrets';
+    }
+    showToast(err.message, true);
+  } finally {
+    state.busy = false;
+    render();
+  }
+}
+
+async function handleAiReleaseNotes() {
+  const rel = state.release;
+  const commits = (rel?.commitsSinceTag || [])
+    .map((c) => `- ${c.shortHash} ${c.subject} (${c.relativeDate})`)
+    .join('\n');
+  const prompt =
+    state.lang === 'tr'
+      ? `Şu Git commit geçmişi için (${state.repoDir}, sürüm ${state.releaseTag}) temiz, kullanıcı dostu bir GitHub Release notu (Markdown) yaz:\n\n${commits || '(Yeni commit yok)'}`
+      : `Write clean, user-friendly GitHub Release notes (Markdown) for ${state.repoDir} (${state.releaseTag}) based on these commits:\n\n${commits || '(No new commits)'}`;
   await sendPromptToChat(prompt);
 }
 
@@ -733,6 +866,89 @@ function renderQualityTab() {
   `;
 }
 
+function renderReleaseTab() {
+  const rel = state.release;
+  if (!rel || !rel.isRepo) {
+    return `<div class="card"><div class="empty">${esc(t('notGitRepo'))}</div></div>`;
+  }
+
+  const tagsHtml =
+    !rel.tags || rel.tags.length === 0
+      ? `<div class="empty">${esc(t('noTags'))}</div>`
+      : `<div class="list">${rel.tags
+          .map(
+            (tg) => `
+          <div class="list-item">
+            <div class="list-item-col">
+              <div class="row">
+                <span class="badge badge-accent mono">${esc(tg.name)}</span>
+                <span class="truncate" style="flex:1">${esc(tg.subject || '')}</span>
+              </div>
+              <span class="muted">${esc(tg.date)}</span>
+            </div>
+          </div>`
+          )
+          .join('')}</div>`;
+
+  return `
+    <div class="card">
+      <div class="card-header">
+        <div class="row">
+          <span class="badge badge-accent mono">${esc(t('releaseVersion'))}: ${esc(rel.currentVersion || 'N/A')}</span>
+          <span class="badge mono">${esc(t('latestTag'))}: ${esc(rel.latestTag || '—')}</span>
+          <span class="badge ${rel.ghAvailable ? 'badge-ok' : 'badge-warn'}">${rel.ghAvailable ? esc(t('ghReady')) : esc(t('ghMissing'))}</span>
+        </div>
+      </div>
+      <div class="row">
+        <span class="muted">${esc(t('bumpVersion'))}:</span>
+        <button class="btn btn-sm" data-action="bump-ver" data-level="patch" ${state.busy ? 'disabled' : ''}>+ Patch</button>
+        <button class="btn btn-sm" data-action="bump-ver" data-level="minor" ${state.busy ? 'disabled' : ''}>+ Minor</button>
+        <button class="btn btn-sm" data-action="bump-ver" data-level="major" ${state.busy ? 'disabled' : ''}>+ Major</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:8px">
+        <div style="flex:1;min-width:130px">
+          <div class="muted" style="margin-bottom:3px">${esc(t('tagNameLabel'))}</div>
+          <input class="input input-mono" id="releaseTagInput" value="${esc(state.releaseTag)}" placeholder="v1.0.0" />
+        </div>
+        <div style="flex:2;min-width:180px">
+          <div class="muted" style="margin-bottom:3px">${esc(t('releaseTitleLabel'))}</div>
+          <input class="input" id="releaseTitleInput" value="${esc(state.releaseTitle)}" placeholder="v1.0.0 — Initial Release" />
+        </div>
+      </div>
+      <div>
+        <div class="row-between" style="margin-bottom:3px">
+          <span class="muted">${esc(t('releaseNotesLabel'))}</span>
+          ${
+            state.canSendMessage
+              ? `<button class="btn btn-sm" data-action="ai-release-notes">✨ ${esc(t('aiReleaseNotesBtn'))}</button>`
+              : ''
+          }
+        </div>
+        <textarea class="textarea mono" id="releaseNotesInput" style="min-height:90px">${esc(state.releaseNotes)}</textarea>
+      </div>
+      <div class="row-between">
+        <label class="row muted" style="cursor:pointer">
+          <input type="checkbox" id="releaseDraftCheck" ${state.releaseDraft ? 'checked' : ''} />
+          <span>${esc(t('draftRelease'))}</span>
+        </label>
+        <div class="row">
+          <button class="btn btn-sm" data-action="create-tag" ${state.busy ? 'disabled' : ''}>🏷️ ${esc(t('createTagBtn'))}</button>
+          <button class="btn btn-sm" data-action="create-push-tag" ${state.busy ? 'disabled' : ''}>⬆️ ${esc(t('createPushTagBtn'))}</button>
+          <button class="btn btn-sm btn-primary" data-action="publish-release" ${state.busy || !rel.ghAvailable ? 'disabled' : ''}>🚀 ${esc(t('publishReleaseBtn'))}</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">${esc(t('existingTags'))} (${rel.tags.length})</span></div>
+      ${tagsHtml}
+    </div>
+  `;
+}
+
 function render() {
   const root = document.getElementById('root');
   if (!root) return;
@@ -744,7 +960,8 @@ function render() {
   let bodyHtml = '';
   if (state.activeTab === 'git') bodyHtml = renderGitTab();
   else if (state.activeTab === 'secrets') bodyHtml = renderSecretsTab();
-  else bodyHtml = renderQualityTab();
+  else if (state.activeTab === 'quality') bodyHtml = renderQualityTab();
+  else bodyHtml = renderReleaseTab();
 
   root.innerHTML = `
     <div class="app-shell">
@@ -763,6 +980,7 @@ function render() {
         <button class="tab-btn ${state.activeTab === 'git' ? 'active' : ''}" data-action="tab" data-tab="git">🔀 ${esc(t('tabGit'))}</button>
         <button class="tab-btn ${state.activeTab === 'secrets' ? 'active' : ''}" data-action="tab" data-tab="secrets">🔒 ${esc(t('tabSecrets'))}</button>
         <button class="tab-btn ${state.activeTab === 'quality' ? 'active' : ''}" data-action="tab" data-tab="quality">✅ ${esc(t('tabQuality'))}</button>
+        <button class="tab-btn ${state.activeTab === 'release' ? 'active' : ''}" data-action="tab" data-tab="release">🚀 ${esc(t('tabRelease'))}</button>
       </div>
 
       <div class="repo-bar">
@@ -781,6 +999,15 @@ document.addEventListener('input', (e) => {
   if (target.id === 'repoDirInput') state.repoInput = target.value;
   if (target.id === 'commitMsgInput') state.commitMsg = target.value;
   if (target.id === 'customCmdInput') state.customCmdInput = target.value;
+  if (target.id === 'releaseTagInput') state.releaseTag = target.value;
+  if (target.id === 'releaseTitleInput') state.releaseTitle = target.value;
+  if (target.id === 'releaseNotesInput') state.releaseNotes = target.value;
+});
+
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'releaseDraftCheck') {
+    state.releaseDraft = e.target.checked;
+  }
 });
 
 document.addEventListener('keydown', (e) => {
@@ -837,6 +1064,16 @@ document.addEventListener('click', (e) => {
     removeCustomCheck(btn.dataset.cmd);
   } else if (action === 'fix-check-ai') {
     handleFixCheckWithAi(btn.dataset.cmd);
+  } else if (action === 'bump-ver') {
+    handleBumpVersion(btn.dataset.level);
+  } else if (action === 'create-tag') {
+    handleCreateTag(false);
+  } else if (action === 'create-push-tag') {
+    handleCreateTag(true);
+  } else if (action === 'publish-release') {
+    handlePublishGithubRelease();
+  } else if (action === 'ai-release-notes') {
+    handleAiReleaseNotes();
   }
 });
 

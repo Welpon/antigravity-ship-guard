@@ -19,6 +19,12 @@ import {
 } from './git.mjs';
 import { scanSecrets } from './secrets.mjs';
 import { detectChecks, runQualityCheck } from './quality.mjs';
+import {
+  getReleaseInfo,
+  bumpVersion,
+  createGitTag,
+  createGithubRelease,
+} from './release.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -93,7 +99,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         repo_dir: { type: 'string', description: 'Optional project directory path.' },
-        tab: { type: 'string', enum: ['git', 'secrets', 'quality'], description: 'Optional initial tab.' },
+        tab: { type: 'string', enum: ['git', 'secrets', 'quality', 'release'], description: 'Optional initial tab.' },
       },
     },
     _meta: {
@@ -223,6 +229,65 @@ const TOOLS = [
     _meta: { ui: { visibility: ['model', 'app'] } },
   },
   {
+    name: 'release_info',
+    title: 'Get Release & Tag Info',
+    description: 'Inspect current package/plugin version, existing Git tags, commits since last tag, and auto-generated release notes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo_dir: { type: 'string' },
+      },
+    },
+    _meta: { ui: { visibility: ['model', 'app'] } },
+  },
+  {
+    name: 'release_bump_version',
+    title: 'Bump Project Version',
+    description: 'Increment semantic version (patch, minor, major) in package.json and/or plugin.json.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo_dir: { type: 'string' },
+        level: { type: 'string', enum: ['patch', 'minor', 'major'] },
+      },
+      required: ['level'],
+    },
+    _meta: { ui: { visibility: ['model', 'app'] } },
+  },
+  {
+    name: 'release_create_tag',
+    title: 'Create Git Tag',
+    description: 'Create an annotated Git tag (e.g. v1.0.0) and optionally push it to origin.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo_dir: { type: 'string' },
+        tag: { type: 'string' },
+        message: { type: 'string' },
+        push: { type: 'boolean' },
+      },
+      required: ['tag'],
+    },
+    _meta: { ui: { visibility: ['model', 'app'] } },
+  },
+  {
+    name: 'release_publish_github',
+    title: 'Publish GitHub Release',
+    description: 'Verify no critical secrets exist, push the Git tag, and create a GitHub Release via gh CLI.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo_dir: { type: 'string' },
+        tag: { type: 'string' },
+        title: { type: 'string' },
+        notes: { type: 'string' },
+        draft: { type: 'boolean' },
+      },
+      required: ['tag'],
+    },
+    _meta: { ui: { visibility: ['model', 'app'] } },
+  },
+  {
     name: 'get_preferences',
     title: 'Get Preferences',
     description: 'Read persisted UI preferences (language, repo directory, custom checks).',
@@ -287,13 +352,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const repoDir = resolveRepoDir(args.repo_dir);
       const git = getGitStatus(repoDir);
       const checks = detectChecks(repoDir);
+      const release = getReleaseInfo(repoDir);
       const prefs = readPrefs();
-      const validTabs = new Set(['git', 'secrets', 'quality']);
+      const validTabs = new Set(['git', 'secrets', 'quality', 'release']);
       return {
         content: [
           {
             type: 'text',
-            text: `Ship Guard (${repoDir}) | Branch: ${git.branch || 'N/A'} | Changed files: ${git.files.length} | Detected checks: ${checks.checks.length}`,
+            text: `Ship Guard (${repoDir}) | Branch: ${git.branch || 'N/A'} | Changed files: ${git.files.length} | Detected checks: ${checks.checks.length} | Version: ${release.currentVersion || 'N/A'}`,
           },
         ],
         structuredContent: {
@@ -301,6 +367,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           repoDir,
           git,
           checks: checks.checks,
+          release,
           prefs,
         },
       };
@@ -409,6 +476,80 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           {
             type: 'text',
             text: `${res.passed ? 'PASSED' : 'FAILED'} (${res.durationMs}ms): ${res.command}\n${res.output.slice(0, 800)}`,
+          },
+        ],
+        structuredContent: res,
+      };
+    }
+
+    if (name === 'release_info') {
+      const repoDir = resolveRepoDir(args.repo_dir);
+      const info = getReleaseInfo(repoDir);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Version: ${info.currentVersion || 'N/A'} | Latest tag: ${info.latestTag || 'none'} | Commits since tag: ${info.commitsSinceTag.length}`,
+          },
+        ],
+        structuredContent: info,
+      };
+    }
+
+    if (name === 'release_bump_version') {
+      const repoDir = resolveRepoDir(args.repo_dir);
+      const res = bumpVersion(repoDir, args.level || 'patch');
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Bumped version ${res.previousVersion} -> ${res.nextVersion} in ${res.updatedFiles.join(', ')}.`,
+          },
+        ],
+        structuredContent: res,
+      };
+    }
+
+    if (name === 'release_create_tag') {
+      const repoDir = resolveRepoDir(args.repo_dir);
+      const res = createGitTag(repoDir, args.tag, args.message, { push: Boolean(args.push) });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Created Git tag ${res.tag}${res.pushed ? ' and pushed to origin' : ''}.`,
+          },
+        ],
+        structuredContent: res,
+      };
+    }
+
+    if (name === 'release_publish_github') {
+      const repoDir = resolveRepoDir(args.repo_dir);
+      const scan = scanSecrets(repoDir, { changedOnly: true });
+      if (scan.summary.critical > 0 || scan.summary.high > 0) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Release blocked by Secret Guard: found ${scan.findings.length} potential secret(s). Clean them first.`,
+            },
+          ],
+          structuredContent: { blocked: true, scan },
+        };
+      }
+      const res = createGithubRelease(repoDir, {
+        tag: args.tag,
+        title: args.title,
+        notes: args.notes,
+        draft: Boolean(args.draft),
+      });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Published GitHub Release ${res.tag}: ${res.url}`,
           },
         ],
         structuredContent: res,
